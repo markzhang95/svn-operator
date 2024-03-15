@@ -18,12 +18,9 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +28,10 @@ import (
 
 	tappsv1 "github.com/markzhang95/application-operator/api/v1"
 )
+
+var CounterReconcileApplication int64
+
+const GenericRequeueDuration = 1 * time.Minute
 
 // ApplicationReconciler reconciles a Application object
 type ApplicationReconciler struct {
@@ -42,6 +43,11 @@ type ApplicationReconciler struct {
 //+kubebuilder:rbac:groups=apps.zhangyi.chat,resources=applications/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps.zhangyi.chat,resources=applications/finalizers,verbs=update
 
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services/status,verbs=get
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
@@ -52,8 +58,11 @@ type ApplicationReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	<-time.NewTicker(100 * time.Millisecond).C
 	l := log.FromContext(ctx)
 
+	CounterReconcileApplication += 1
+	l.Info("Starting a reconcile", "number", CounterReconcileApplication)
 	// get the Application
 	app := &tappsv1.Application{}
 	if err := r.Get(ctx, req.NamespacedName, app); err != nil {
@@ -61,26 +70,24 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			l.Info("the Application is not found")
 			return ctrl.Result{}, nil
 		}
-		l.Error(err, "failed to get the Application")
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		l.Error(err, "failed to get the Application， will requeue after a short time.")
+		return ctrl.Result{RequeueAfter: GenericRequeueDuration}, err
 	}
-	// create Pods
-	for i := 0; i < int(app.Spec.Replicas); i++ {
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-%d", app.Name, i),
-				Namespace: app.Namespace,
-				Labels:    app.Labels,
-			},
-			Spec: app.Spec.Template.Spec,
-		}
-		if err := r.Create(ctx, pod); err != nil {
-			l.Error(err, "failed to create Pod")
-			return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
-		}
-		l.Info(fmt.Sprintf("the Pod (%s) has created", pod.Name))
+	// reconcile sub-resources
+	var result ctrl.Result
+	var err error
+	result, err = r.ReconcileDeployment(ctx, app)
+	if err != nil {
+		l.Error(err, "Failed to reconcile Deployment.")
+		return result, err
 	}
-	l.Info("all pods has created")
+
+	result, err = r.ReconcileService(ctx, app)
+	if err != nil {
+		l.Error(err, "Failed to reconcile Service.")
+		return result, err
+	}
+	l.Info("All resources have been reconciled.")
 	return ctrl.Result{}, nil
 }
 
