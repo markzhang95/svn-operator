@@ -18,15 +18,20 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"time"
 
+	tappsv1 "github.com/markzhang95/application-operator/api/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	tappsv1 "github.com/markzhang95/application-operator/api/v1"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 var CounterReconcileApplication int64
@@ -43,10 +48,10 @@ type ApplicationReconciler struct {
 //+kubebuilder:rbac:groups=apps.zhangyi.chat,resources=applications/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps.zhangyi.chat,resources=applications/finalizers,verbs=update
 
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get
-//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services/status,verbs=get
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -93,7 +98,70 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	setupLog := ctrl.Log.WithName("setup")
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&tappsv1.Application{}).
+		For(&tappsv1.Application{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc: func(event event.CreateEvent) bool {
+				return true
+			},
+			DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
+				setupLog.Info("The Application has been deleted.",
+					"name", deleteEvent.Object.GetName())
+				return false
+			},
+			UpdateFunc: func(updateEvent event.UpdateEvent) bool {
+				if updateEvent.ObjectNew.GetResourceVersion() == updateEvent.ObjectOld.GetResourceVersion() {
+					return false
+				}
+				if reflect.DeepEqual(updateEvent.ObjectNew.(*tappsv1.Application).Spec,
+					updateEvent.ObjectOld.(*tappsv1.Application).Spec) {
+					return false
+				}
+				return true
+			},
+		})).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc: func(createEvent event.CreateEvent) bool {
+				return false
+			},
+			DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
+				setupLog.Info("The Deployment has been deleted.",
+					"name", deleteEvent.Object.GetName())
+				return true
+			},
+			UpdateFunc: func(updateEvent event.UpdateEvent) bool {
+				if updateEvent.ObjectNew.GetResourceVersion() == updateEvent.ObjectOld.GetResourceVersion() {
+					return false
+				}
+				if reflect.DeepEqual(updateEvent.ObjectNew.(*appsv1.Deployment).Spec,
+					updateEvent.ObjectOld.(*appsv1.Deployment).Spec) {
+					return false
+				}
+				return true
+			},
+			GenericFunc: nil,
+		})).
+		Owns(&corev1.Service{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc: func(createEvent event.CreateEvent) bool {
+				return false
+			},
+			DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
+				setupLog.Info("The Service has been deleted.",
+					"name", deleteEvent.Object.GetName())
+				return true
+			},
+			UpdateFunc: func(updateEvent event.UpdateEvent) bool {
+				if updateEvent.ObjectNew.GetResourceVersion() == updateEvent.ObjectOld.GetResourceVersion() {
+					return false
+				}
+				if reflect.DeepEqual(updateEvent.ObjectNew.(*tappsv1.Application).Spec,
+					updateEvent.ObjectOld.(*tappsv1.Application).Spec) {
+					return false
+				}
+				return true
+			},
+			GenericFunc: nil,
+		})).
 		Complete(r)
 }
